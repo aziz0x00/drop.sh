@@ -1,0 +1,96 @@
+#!/bin/bash
+
+# simple files trash
+
+DROP_VERSION=0.1
+DROP_PATH=${DROP_PATH:-~/.local/share/drop_trash}
+
+TRASH_FILES=$DROP_PATH/files
+TRASH_INFO=$DROP_PATH/info
+
+mkdir -p "$TRASH_FILES" "$TRASH_INFO"
+
+help() {
+    cat <<HELP
+Usage: drop [FILE]...
+  or: drop [OPTION]
+The default action will move FILE(s) to the trash directory where it can be
+restored later with the option --restore with the fuzzy finder *fzf*.
+
+  -h, --help      display this help text
+  -r, --restore   to restore files, this must be the first argument, ignoring any other
+  -V, --version   output version inforamtion
+
+To remove a file whose name starts with a '-', for example '-h',
+use one of these commands:
+    drop -- -h
+
+    drop ./-h
+
+    drop anotherfiletodelete -h
+HELP
+}
+
+version() { echo 'drop v'$DROP_VERSION; }
+
+restore() {
+
+    # exit if there's no trash
+    [[ -z $(ls "$TRASH_INFO") ]] && echo 'Trash is empty' && exit
+
+    # collect all UUIDs and paths pairs
+    for u in $(ls -1t $TRASH_INFO | tac); do
+        printf "%s %s\0" "$(cat "$TRASH_INFO/$u")" "$u"
+    done |
+        # user select paths, and then we map them to UUIDs
+        fzf --multi --with-nth 1..-2 --cycle --read0 --print0 |
+        awk -v RS="\0" -F\  '{ printf("%s\0", $NF) }' |
+
+        # parse collected UUIDs
+        # (read and subshells are weird and painful sometimes)
+        while IFS= read -r -d $'\0' uuid; do
+
+            read -r -d $'\0' path <"$TRASH_INFO/$uuid"
+
+            mkdir -p "$(dirname "$path")"
+
+            mv -i "$TRASH_FILES/$uuid" "$path" </dev/tty &&
+                rm "$TRASH_INFO/$uuid"
+
+            [[ $? -eq 0 ]] &&
+                echo "file ${path@K} had been restored" ||
+                echo "file ${path@K} couldn't be restored, path is non-writeable?"
+
+        done
+}
+
+delete() {
+
+    for file in "${files[@]}"; do
+
+        # if it doesn't exist skip
+        [ ! -e "$file" ] && echo "file ${file@K} doesn't exist" >&2 && continue
+
+        # make sure $file is absolute path
+        [[ "$file" = /* ]] || file="$(pwd)/$file"
+
+        dest=$(uuidgen)
+        mv "$file" "$TRASH_FILES/$dest"
+        echo -n "$file" >"$TRASH_INFO/$dest"
+        echo "moved to trash ${file@K}"
+    done
+}
+
+opt=$1
+[[ -z $opt ]] && opt=-h
+
+case $opt in
+-h | --help) help ;;
+-r | --restore) restore ;;
+-V | --version) version ;;
+*)
+    [[ $1 = "--" ]] && shift
+    files=("$@")
+    delete
+    ;;
+esac
